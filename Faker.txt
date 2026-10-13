@@ -1,0 +1,202 @@
+import pyodbc
+import random
+from faker import Faker
+from datetime import datetime, timedelta
+
+# =====================================================================
+# 1. KONFIGURACJA POŁĄCZENIA
+# =====================================================================
+SERVER = r'.'
+DATABASE = 'platforma_streamingowa'
+
+conn_str = f'DRIVER={{SQL Server}};SERVER={SERVER};DATABASE={DATABASE};Trusted_Connection=yes;'
+
+print("Łączenie z bazą danych...")
+try:
+    conn = pyodbc.connect(conn_str)
+    cursor = conn.cursor()
+    cursor.fast_executemany = False
+    print("Połączono pomyślnie!")
+except Exception as e:
+    print(f"Błąd połączenia: {e}")
+    exit()
+
+# =====================================================================
+# 2. POBRANIE ISTNIEJĄCYCH DANYCH Z BAZY
+# =====================================================================
+print("Pobieranie istniejących tytułów i odcinków z bazy...")
+cursor.execute("SELECT id_tytulu, ISNULL(czas_trwania_minuty, 45) FROM Tytuly")
+ISTNIEJACE_TYTULY = {row[0]: row[1] for row in cursor.fetchall()}
+
+cursor.execute("SELECT id_odcinka FROM Odcinki")
+ISTNIEJACE_ODCINKI = [row[0] for row in cursor.fetchall()]
+
+PLANY = {
+    1: {'max_profili': 1, 'cena': 29.00},
+    2: {'max_profili': 3, 'cena': 43.00},
+    3: {'max_profili': 5, 'cena': 60.00}
+}
+ISTNIEJACE_JEZYKI = [1, 2, 3, 4]
+LICZBA_UZYTKOWNIKOW = 50000
+
+fake = Faker('pl_PL')
+
+# =====================================================================
+# 3. GENEROWANIE DANYCH (W PAMIĘCI)
+# =====================================================================
+print(f"\nGenerowanie {LICZBA_UZYTKOWNIKOW} użytkowników i historii... (to zajmie kilka sekund)")
+
+uzytkownicy, subskrypcje, faktury = [], [], []
+profile, ustawienia = [], []
+historia, moja_lista, powiadomienia, rekomendacje = [], [], [], []
+
+id_faktury_counter = 1
+id_profilu_counter = 1
+id_historii_counter = 1
+id_powiadomienia_counter = 1
+id_rekomendacji_counter = 1
+
+typy_powiadomien = [
+    "Nowy sezon ulubionego serialu jest dostępny!",
+    "Ostatnia szansa! Tytuł znika z listy.",
+    "Zalogowano się z nowego urządzenia.",
+    "Polecamy nowy hit specjalnie dla Ciebie!"
+]
+
+for i in range(1, LICZBA_UZYTKOWNIKOW + 1):
+    data_rej = fake.date_time_between(start_date='-2y', end_date='now')
+
+    # Czyste, odpowiednio przycięte dane - żadnych kombinacji
+    uzytkownicy.append((
+        i,
+        f"u{i}_{fake.unique.email()}"[:50],
+        fake.password(length=20),
+        data_rej.strftime('%Y-%m-%d %H:%M:%S'),
+        fake.country()[:20],
+        fake.city()[:20]
+    ))
+
+    # Subskrypcja
+    plan_id = random.choice(list(PLANY.keys()))
+    data_rozp = data_rej + timedelta(hours=random.randint(1, 24))
+    status = random.choices(['Aktywna', 'Anulowana', 'Wygasła'], weights=[70, 15, 15])[0]
+
+    if status == 'Aktywna': data_zak = None
+    elif status == 'Anulowana': data_zak = data_rozp + timedelta(days=random.randint(5, 25))
+    else: data_zak = data_rozp + timedelta(days=30)
+
+    subskrypcje.append((
+        i, i, plan_id, data_rozp.strftime('%Y-%m-%d %H:%M:%S'),
+        data_zak.strftime('%Y-%m-%d %H:%M:%S') if data_zak else None, status
+    ))
+
+    # Faktura
+    faktury.append((
+        id_faktury_counter, i, random.randint(1, 4), PLANY[plan_id]['cena'],
+        data_rozp.strftime('%Y-%m-%d %H:%M:%S'), (data_rozp + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S'),
+        'Opłacona' if status == 'Aktywna' else random.choice(['Opłacona', 'Nieopłacona'])
+    ))
+    id_faktury_counter += 1
+
+    # Profile
+    limit_profili = PLANY[plan_id]['max_profili']
+    wykorzystane_profile = random.randint(1, limit_profili)
+
+    for _ in range(wykorzystane_profile):
+        czy_dzieciecy = random.choices([0, 1], weights=[80, 20])[0]
+        max_kat = random.choice([7, 12]) if czy_dzieciecy else random.choice([16, 18])
+
+        profile.append((
+            id_profilu_counter, i, fake.first_name()[:20], czy_dzieciecy, max_kat
+        ))
+
+        ustawienia.append((
+            id_profilu_counter, random.choice(ISTNIEJACE_JEZYKI), random.choice(ISTNIEJACE_JEZYKI),
+            random.choice([0, 1]), random.choice([0, 1])
+        ))
+
+        tytuly_do_aktywnosci = random.sample(list(ISTNIEJACE_TYTULY.keys()), k=random.randint(1, 5))
+        for t_id in tytuly_do_aktywnosci:
+            czas_sekundy = ISTNIEJACE_TYTULY[t_id] * 60
+            czy_do_konca = random.choice([0, 1])
+            postep = czas_sekundy if czy_do_konca else random.randint(1, max(2, czas_sekundy - 1))
+            id_odcinka = random.choice(ISTNIEJACE_ODCINKI) if (ISTNIEJACE_ODCINKI and random.random() > 0.3) else None
+
+            historia.append((
+                id_historii_counter, id_profilu_counter, t_id,
+                fake.date_time_this_year().strftime('%Y-%m-%d %H:%M:%S'), postep, czy_do_konca, id_odcinka
+            ))
+            id_historii_counter += 1
+
+            if random.random() > 0.5:
+                moja_lista.append((id_profilu_counter, t_id, fake.date_time_this_year().strftime('%Y-%m-%d %H:%M:%S')))
+
+        powiadomienia.append((
+            id_powiadomienia_counter, id_profilu_counter, random.choice(list(ISTNIEJACE_TYTULY.keys())),
+            random.choice(typy_powiadomien)[:50], random.choice([0, 1]),
+            fake.date_time_this_month().strftime('%Y-%m-%d %H:%M:%S')
+        ))
+        id_powiadomienia_counter += 1
+
+        rekomendacje.append((
+            id_rekomendacji_counter, id_profilu_counter, random.choice(list(ISTNIEJACE_TYTULY.keys())),
+            fake.date_time_this_month().strftime('%Y-%m-%d %H:%M:%S')
+        ))
+        id_rekomendacji_counter += 1
+        id_profilu_counter += 1
+
+# =====================================================================
+# 4. INTELIGENTNE WSTAWIANIE Z PASKIEM POSTĘPU
+# =====================================================================
+print(f"\nRozpoczynam wgrywanie {len(uzytkownicy) + len(subskrypcje) + len(faktury) + len(profile) + len(ustawienia) + len(historia) + len(moja_lista) + len(powiadomienia) + len(rekomendacje)} rekordów do bazy. To potrwa około 1-2 minuty.\n")
+
+def wstaw_w_paczkach(nazwa, zapytanie, dane, rozmiar_paczki=5000):
+    print(f"Wgrywam {nazwa} ({len(dane)} wierszy)...")
+    for i in range(0, len(dane), rozmiar_paczki):
+        paczka = dane[i:i + rozmiar_paczki]
+        cursor.executemany(zapytanie, paczka)
+        print(f"  -> Załadowano {min(i + rozmiar_paczki, len(dane))} / {len(dane)}")
+
+try:
+    cursor.execute("SET IDENTITY_INSERT Uzytkownicy ON")
+    wstaw_w_paczkach("Użytkowników", "INSERT INTO Uzytkownicy (id_uzytkownika, email, haslo_hash, data_rejestracji, kraj, miasto) VALUES (?, ?, ?, ?, ?, ?)", uzytkownicy)
+    cursor.execute("SET IDENTITY_INSERT Uzytkownicy OFF")
+
+    cursor.execute("SET IDENTITY_INSERT Subskrypcje ON")
+    wstaw_w_paczkach("Subskrypcje", "INSERT INTO Subskrypcje (id_subskrypcji, id_uzytkownika, id_planu, data_rozpoczecia, data_zakonczenia, status) VALUES (?, ?, ?, ?, ?, ?)", subskrypcje)
+    cursor.execute("SET IDENTITY_INSERT Subskrypcje OFF")
+
+    cursor.execute("ALTER TABLE Faktury NOCHECK CONSTRAINT ALL")
+    cursor.execute("SET IDENTITY_INSERT Faktury ON")
+    wstaw_w_paczkach("Faktury", "INSERT INTO Faktury (id_faktury, id_subskrypcji, id_metody_platnosci, kwota, data_wystawienia, termin_platnosci, status_platnosci) VALUES (?, ?, ?, ?, ?, ?, ?)", faktury)
+    cursor.execute("SET IDENTITY_INSERT Faktury OFF")
+    cursor.execute("ALTER TABLE Faktury WITH NOCHECK CHECK CONSTRAINT ALL")
+
+    cursor.execute("SET IDENTITY_INSERT Profile_Uzytkownikow ON")
+    wstaw_w_paczkach("Profile", "INSERT INTO Profile_Uzytkownikow (id_profilu, id_uzytkownika, nazwa_profilu, czy_profil_dzieciecy, max_kategoria_wiekowa) VALUES (?, ?, ?, ?, ?)", profile)
+    cursor.execute("SET IDENTITY_INSERT Profile_Uzytkownikow OFF")
+
+    wstaw_w_paczkach("Ustawienia", "INSERT INTO Ustawienia_profilu (id_profilu, domyslny_jezyk_audio_id, domyslny_jezyk_napisow_id, autoodtwarzanie_kolejnego_odcinka, autoodtwarzanie_zwiastunow) VALUES (?, ?, ?, ?, ?)", ustawienia)
+    wstaw_w_paczkach("Moje Listy", "INSERT INTO Moja_Lista (id_profilu, id_tytulu, data_dodania) VALUES (?, ?, ?)", moja_lista)
+
+    cursor.execute("SET IDENTITY_INSERT Historia_Ogladania ON")
+    wstaw_w_paczkach("Historię Oglądania", "INSERT INTO Historia_Ogladania (id_historii, id_profilu, id_tytulu, data_ogladania, postep_w_sekundach, czy_obejrzane_do_konca, id_odcinka) VALUES (?, ?, ?, ?, ?, ?, ?)", historia)
+    cursor.execute("SET IDENTITY_INSERT Historia_Ogladania OFF")
+
+    cursor.execute("SET IDENTITY_INSERT Powiadomienia ON")
+    wstaw_w_paczkach("Powiadomienia", "INSERT INTO Powiadomienia (id_powiadomienia, id_profilu, id_tytulu, tresc_wiadomosci, czy_przeczytane, data_utworzenia) VALUES (?, ?, ?, ?, ?, ?)", powiadomienia)
+    cursor.execute("SET IDENTITY_INSERT Powiadomienia OFF")
+
+    cursor.execute("SET IDENTITY_INSERT Rekomendacje ON")
+    wstaw_w_paczkach("Rekomendacje", "INSERT INTO Rekomendacje (id_rekomendacji, id_profilu, id_tytulu, data_wygenerowania) VALUES (?, ?, ?, ?)", rekomendacje)
+    cursor.execute("SET IDENTITY_INSERT Rekomendacje OFF")
+
+    conn.commit()
+    print("\nSUKCES! Baza jest zapełniona po brzegi!")
+
+except Exception as e:
+    conn.rollback()
+    print(f"\nBŁĄD: {e}")
+finally:
+    cursor.close()
+    conn.close()
